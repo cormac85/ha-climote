@@ -167,6 +167,9 @@ async def test_set_boost_success():
     assert result is True
 
 
+FORM_1_3 = '<input name="temp-set-input[1]"><input name="temp-set-input[3]">'
+FORM_1_2_3 = FORM_1_3.replace('<input name="temp-set-input[3]">', '<input name="temp-set-input[2]"><input name="temp-set-input[3]">')
+
 @pytest.mark.asyncio
 async def test_set_temperature_payload():
     """The temperature POST matches the portal's form and never leaks the zone-2 field."""
@@ -175,6 +178,7 @@ async def test_set_temperature_payload():
     api._csrf_token = "csrf123"
 
     session.request.side_effect = [
+        make_mock_response(200, FORM_1_3),     # GET temperature page (which zones exist)
         make_mock_response(200, ""),           # POST temperature (no delivery poll follows)
     ]
 
@@ -182,8 +186,8 @@ async def test_set_temperature_payload():
         result = await api.set_temperature(zone_id=1, temperature=19.3)
 
     assert result is True
-    assert session.request.call_count == 1
-    post = session.request.call_args_list[0]
+    assert session.request.call_count == 2
+    post = session.request.call_args_list[1]
     assert post.args[:2] == ("POST", f"{BASE_URL}/manager/temperature")
     assert post.kwargs["data"] == {
         "temp-set-input[1]": 19.5,
@@ -200,7 +204,45 @@ async def test_set_temperature_rejects_bad_input():
     api._csrf_token = "csrf123"
 
     with pytest.raises(ValueError):
-        await api.set_temperature(zone_id=2, temperature=19)
+        await api.set_temperature(zone_id=1, temperature=40)  # too hot for a room
     with pytest.raises(ValueError):
-        await api.set_temperature(zone_id=1, temperature=40)
+        await api.set_temperature(zone_id=3, temperature=71)  # too hot even for water
     session.request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_zone_not_on_form():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    session.request.side_effect = [make_mock_response(200, FORM_1_3)]
+
+    with pytest.raises(ValueError):
+        await api.set_temperature(zone_id=2, temperature=19)
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_zone_2_when_form_has_it():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    session.request.side_effect = [make_mock_response(200, FORM_1_2_3), make_mock_response(200, "")]
+
+    assert await api.set_temperature(zone_id=2, temperature=19) is True
+    data = session.request.call_args_list[1].kwargs["data"]
+    assert data["temp-set-input[2]"] == 19
+    assert data["temp-set-input[1]"] == "nochange"
+    assert data["temp-set-input[3]"] == "nochange"
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_water_zone_allows_65():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    session.request.side_effect = [make_mock_response(200, FORM_1_3), make_mock_response(200, "")]
+
+    assert await api.set_temperature(zone_id=3, temperature=65) is True
+    data = session.request.call_args_list[1].kwargs["data"]
+    assert data["temp-set-input[3]"] == 65
+    assert data["temp-set-input[1]"] == "nochange"

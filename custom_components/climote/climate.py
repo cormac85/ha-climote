@@ -14,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, LOGGER, DEFAULT_BOOST_DURATION
+from .api import temp_limits
 from .coordinator import ClimoteDataUpdateCoordinator
 
 async def async_setup_entry(
@@ -121,12 +122,12 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
     @property
     def min_temp(self) -> float:
         """Return the minimum temperature."""
-        return 5.0
+        return temp_limits(self._zone_id)[0]
 
     @property
     def max_temp(self) -> float:
         """Return the maximum temperature."""
-        return 32.0
+        return temp_limits(self._zone_id)[1]
 
     @property
     def target_temperature_step(self) -> float:

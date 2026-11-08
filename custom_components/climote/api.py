@@ -18,9 +18,15 @@ from .const import (
     PATH_SCHEDULE,
 )
 
-TEMPERATURE_FORM_ZONES = (1, 3)
-MIN_TEMP = 5.0
-MAX_TEMP = 32.0
+# Allowed setpoints per zone: room thermostats, and zone 3 (hot water) which runs far hotter.
+ROOM_TEMP_LIMITS = (5.0, 32.0)
+WATER_TEMP_LIMITS = (5.0, 70.0)
+WATER_ZONE = 3
+
+
+def temp_limits(zone_id: int) -> tuple[float, float]:
+    """Return (min, max) setpoint for a zone."""
+    return WATER_TEMP_LIMITS if zone_id == WATER_ZONE else ROOM_TEMP_LIMITS
 
 class ClimoteConnectionError(Exception):
     """Exception raised when connection to Climote fails."""
@@ -356,27 +362,47 @@ class ClimoteAPI:
         """Internal: POST a boost payload, retrying once after re-auth on failure."""
         await self._send_form(PATH_BOOST, payload)
 
+    async def temperature_form_zones(self) -> tuple[int, ...]:
+        """Return the zones the portal's temperature form has a field for.
+
+        Read from the page itself (inputs named temp-set-input[N]) because it depends on the
+        installation: one account's form lists zones 1 and 3 only. Falls back to all three
+        zones if the page cannot be read or lists none.
+        """
+        try:
+            html = await self._request("GET", PATH_TEMPERATURE)
+            zones = sorted({int(n) for n in re.findall(r"temp-set-input\[(\d+)\]", html)})
+            if zones:
+                return tuple(zones)
+            LOGGER.warning("No temp-set-input fields found on the temperature page")
+        except ClimoteConnectionError as err:
+            LOGGER.warning("Could not read the temperature page: %s", err)
+        return (1, 2, 3)
+
     async def set_temperature(self, zone_id: int, temperature: float) -> bool:
         """Set a zone's target temperature (POST accepted; delivery is not awaited).
 
-        The portal's own form (POST /manager/temperature) carries a field for
-        zones 1 and 3 only; zone 2 is not in it. Other zones are sent as
-        "nochange". The temperature is validated and rounded to 0.5 C.
+        Sends the portal's own form (POST /manager/temperature): the target zone gets the value,
+        every other zone the form lists gets "nochange". The temperature is validated against the
+        zone's limits and rounded to 0.5 C.
         """
-        if zone_id not in TEMPERATURE_FORM_ZONES:
-            raise ValueError(f"Zone {zone_id} cannot be set through the temperature form")
-        if not MIN_TEMP <= float(temperature) <= MAX_TEMP:
-            raise ValueError(f"Temperature {temperature} outside {MIN_TEMP}-{MAX_TEMP}")
-
-        value = round(float(temperature) * 2) / 2
-        LOGGER.info("Setting zone %d target temperature to %s", zone_id, value)
+        low, high = temp_limits(zone_id)
+        if not low <= float(temperature) <= high:
+            raise ValueError(f"Temperature {temperature} outside {low}-{high} for zone {zone_id}")
 
         if not self._csrf_token:
             await self.login()
 
+        form_zones = await self.temperature_form_zones()
+        if zone_id not in form_zones:
+            raise ValueError(f"Zone {zone_id} is not on the portal's temperature form {form_zones}")
+
+        value = round(float(temperature) * 2) / 2
+        LOGGER.info("Setting zone %d target temperature to %s", zone_id, value)
+
         payload = {
             f"temp-set-input[{i}]": value if i == zone_id else "nochange"
-            for i in TEMPERATURE_FORM_ZONES
+            for i in form_zones
         }
         payload["do"] = "Set"
         payload["cs_token_rf"] = self._csrf_token

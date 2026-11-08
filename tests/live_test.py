@@ -155,6 +155,7 @@ async def run():
         # ── 6. Set temperature (restores the original setpoint) ────────────
         section(f"TEST 6: Set temperature — zone {ZONE}")
         try:
+            print(f"   zones on the portal's temperature form: {await api.temperature_form_zones()}")
             before = (await api.get_status(force_gsm=True)).get(f"zone{ZONE}", {})
             orig = float(before.get("thermostat") or 0)
             print(f"   raw zone{ZONE} before: {before}")
