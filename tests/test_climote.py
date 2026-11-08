@@ -14,6 +14,7 @@ sys.modules['homeassistant'] = MagicMock()
 sys.modules['homeassistant.config_entries'] = MagicMock()
 sys.modules['homeassistant.const'] = MagicMock()
 sys.modules['homeassistant.core'] = MagicMock()
+sys.modules['homeassistant.exceptions'] = MagicMock()
 sys.modules['homeassistant.helpers'] = MagicMock()
 sys.modules['homeassistant.helpers.update_coordinator'] = MagicMock()
 sys.modules['homeassistant.helpers.entity_platform'] = MagicMock()
@@ -164,3 +165,42 @@ async def test_set_boost_success():
         result = await api.set_boost(zone_id=1, duration_hours=1.0)
 
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_payload():
+    """The temperature POST matches the portal's form and never leaks the zone-2 field."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+
+    session.request.side_effect = [
+        make_mock_response(200, ""),           # POST temperature (no delivery poll follows)
+    ]
+
+    with patch("asyncio.sleep", AsyncMock()):
+        result = await api.set_temperature(zone_id=1, temperature=19.3)
+
+    assert result is True
+    assert session.request.call_count == 1
+    post = session.request.call_args_list[0]
+    assert post.args[:2] == ("POST", f"{BASE_URL}/manager/temperature")
+    assert post.kwargs["data"] == {
+        "temp-set-input[1]": 19.5,
+        "temp-set-input[3]": "nochange",
+        "do": "Set",
+        "cs_token_rf": "csrf123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_temperature_rejects_bad_input():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+
+    with pytest.raises(ValueError):
+        await api.set_temperature(zone_id=2, temperature=19)
+    with pytest.raises(ValueError):
+        await api.set_temperature(zone_id=1, temperature=40)
+    session.request.assert_not_called()
