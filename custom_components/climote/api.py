@@ -300,7 +300,16 @@ class ClimoteAPI:
                 except Exception:
                     status_data = clean_res
             else:
-                status_data = json.loads(clean_res)
+                try:
+                    status_data = json.loads(clean_res)
+                except ValueError as err:
+                    # Usually the login page, served in place of the status once the session has
+                    # expired. get_status re-authenticates and retries; the snippet (first 80 characters,
+                    # never the whole page) shows what the portal sent if the retry fails too.
+                    snippet = " ".join(clean_res.split())[:80]
+                    raise ClimoteConnectionError(
+                        f"Status reply is not JSON ({len(clean_res)} chars, starts {snippet!r})"
+                    ) from err
         except ClimoteConnectionError:
             raise
         except Exception as err:
@@ -370,10 +379,16 @@ class ClimoteAPI:
         zones if the page cannot be read or lists none.
         """
         try:
-            html = await self._request("GET", PATH_TEMPERATURE)
-            zones = sorted({int(n) for n in re.findall(r"temp-set-input\[(\d+)\]", html)})
-            if zones:
-                return tuple(zones)
+            for attempt in (1, 2):
+                html = await self._request("GET", PATH_TEMPERATURE)
+                zones = sorted({int(n) for n in re.findall(r"temp-set-input\[(\d+)\]", html)})
+                if zones:
+                    return tuple(zones)
+                if attempt == 1:
+                    # An expired session gets the login page (HTTP 200) instead of the form.
+                    LOGGER.info("No temp-set-input fields on the temperature page, re-authenticating")
+                    self._csrf_token = None
+                    await self.login()
             LOGGER.warning("No temp-set-input fields found on the temperature page")
         except ClimoteConnectionError as err:
             LOGGER.warning("Could not read the temperature page: %s", err)

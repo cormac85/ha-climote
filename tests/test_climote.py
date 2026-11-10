@@ -246,3 +246,40 @@ async def test_set_temperature_water_zone_allows_65():
     data = session.request.call_args_list[1].kwargs["data"]
     assert data["temp-set-input[3]"] == 65
     assert data["temp-set-input[1]"] == "nochange"
+
+
+@pytest.mark.asyncio
+async def test_status_not_json_names_the_body_and_retries_after_login():
+    """A login page in place of the status is an expired session: re-login, retry, and say what came back."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "old"
+    login_page = "<html>\n  <body>Please log in " + "x" * 500
+    session.request.side_effect = [make_mock_response(200, login_page), make_mock_response(200, '{"zone1": {}}')]
+
+    async def fake_login():
+        api._csrf_token = "new"
+
+    api.login = fake_login
+    assert await api.get_status() == {"zone1": {}}
+
+    session.request.side_effect = [make_mock_response(200, login_page)] * 2
+    with pytest.raises(ClimoteConnectionError) as err:
+        await api.get_status()
+    assert "starts '<html> <body>Please log in" in str(err.value)
+    assert len(str(err.value)) < 200  # a snippet, never the page
+
+
+@pytest.mark.asyncio
+async def test_temperature_form_zones_relogs_in_when_the_page_is_the_login_page():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "old"
+    session.request.side_effect = [make_mock_response(200, "<html>login</html>"), make_mock_response(200, FORM_1_3)]
+
+    async def fake_login():
+        api._csrf_token = "new"
+
+    api.login = fake_login
+    assert await api.temperature_form_zones() == (1, 3)
+    assert api._csrf_token == "new"
