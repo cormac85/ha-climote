@@ -37,7 +37,7 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
     """Representation of a Climote Heating Zone as a Climate Entity."""
 
     _attr_has_entity_name = True
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
 
     def __init__(
@@ -71,7 +71,7 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
         return self.coordinator.data.get(key, {})
 
     @property
-    def target_temperature(self) -> float | None:
+    def native_target_temperature(self) -> float | None:
         """Return the target temperature (thermostat setting)."""
         try:
             thermostat = self._zone_data.get("thermostat")
@@ -83,7 +83,7 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
         return None
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         """Return the current temperature inside the zone."""
         try:
             temp = self._zone_data.get("temperature")
@@ -174,8 +174,8 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
         except Exception as err:  # the command was accepted; do not fail the call on a slow hub
             LOGGER.warning("Could not read back zone %d after setting %s C: %s", self._zone_id, temperature, err)
             return
-        if self.target_temperature != round(float(temperature) * 2) / 2:
+        if self.native_target_temperature != round(float(temperature) * 2) / 2:
             LOGGER.warning(
                 "Zone %d reads %s C after setting %s C; the hub may not have applied it yet",
-                self._zone_id, self.target_temperature, temperature,
+                self._zone_id, self.native_target_temperature, temperature,
             )
