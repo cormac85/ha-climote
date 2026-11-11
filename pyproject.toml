@@ -19,4 +19,6 @@ package = false  # nothing to build or install; this file only describes the dev
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# live_test.py talks to the real portal and exits at import without credentials: run it by hand.
+addopts = "--ignore=tests/live_test.py"
 asyncio_default_fixture_loop_scope = "function"

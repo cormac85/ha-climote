@@ -3,6 +3,7 @@ import async_timeout
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, LOGGER, DEFAULT_POLL_INTERVAL
 from .api import ClimoteAPI, ClimoteConnectionError, ClimoteAuthError
@@ -25,6 +26,8 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
             name=DOMAIN,
             update_interval=timedelta(seconds=poll_interval_seconds),
         )
+        # HA's coordinator only has a success flag, no timestamp; the Last Updated sensor reads this.
+        self.last_update_success_time = None
 
     async def _async_update_data(self) -> dict:
         """Fetch data from Climote Cloud (regular cached polling)."""
@@ -39,6 +42,7 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
                     raise UpdateFailed("Received invalid response from Climote API")
                 
                 LOGGER.debug("Climote coordinator poll success: %s", data)
+                self.last_update_success_time = dt_util.utcnow()
                 return data
         except ClimoteAuthError as err:
             LOGGER.error("Climote authentication expired during polling: %s", err)
@@ -59,6 +63,7 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
             
             if data and isinstance(data, dict):
                 # Update the coordinator's cached data and notify listeners immediately
+                self.last_update_success_time = dt_util.utcnow()
                 self.async_set_updated_data(data)
                 return data
             else:
