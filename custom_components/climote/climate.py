@@ -100,7 +100,7 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
         # status "5" = Boost is active
         # status "1" = Schedule/timer is running (heating)
         # status None or "0" = idle / off
-        status = self._zone_data.get("status")
+        status = str(self._zone_data.get("status"))
         if status in ("5", "1"):
             return HVACMode.HEAT
         return HVACMode.OFF
@@ -113,7 +113,7 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
     @property
     def hvac_action(self) -> HVACAction | None:
         """Return the current HVAC action (HEATING or IDLE)."""
-        status = self._zone_data.get("status")
+        status = str(self._zone_data.get("status"))
         # "5" = Boost, "1" = Schedule-driven heat
         if status in ("5", "1"):
             return HVACAction.HEATING

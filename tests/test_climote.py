@@ -151,21 +151,43 @@ async def test_get_status_gsm_wait_loop():
 
 @pytest.mark.asyncio
 async def test_set_boost_success():
-    """Test triggering a boost and verifying the wait-for-delivery-report OK state."""
+    """A boost is one POST with no delivery poll (the portal's delivery report never completes)."""
     session = MagicMock(spec=aiohttp.ClientSession)
     api = ClimoteAPI(session, "test@email.com", "password")
     api._csrf_token = "csrf123"
 
     session.request.side_effect = [
-        make_mock_response(200, ""),          # POST boost
-        make_mock_response(200, "PENDING"),   # GET delivery report (attempt 1)
-        make_mock_response(200, "OK"),        # GET delivery report (attempt 2)
+        make_mock_response(200, ""),          # POST boost (no delivery poll follows)
     ]
 
     with patch("asyncio.sleep", AsyncMock()):
-        result = await api.set_boost(zone_id=1, duration_hours=1.0)
+        result = await api.set_boost(zone_id=3, duration_hours=1.0)
 
     assert result is True
+    assert session.request.call_count == 1
+    assert session.request.call_args.kwargs["data"] == {
+        "zoneIds[1]": "nochange",
+        "zoneIds[2]": "nochange",
+        "zoneIds[3]": 1.0,
+        "cs_token_rf": "csrf123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_boost_success():
+    """Cancelling a boost is one POST with no delivery poll, so the caller can refresh the status."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+
+    session.request.side_effect = [make_mock_response(200, "")]
+
+    with patch("asyncio.sleep", AsyncMock()):
+        result = await api.cancel_boost(zone_id=3)
+
+    assert result is True
+    assert session.request.call_count == 1
+    assert session.request.call_args.kwargs["data"]["zoneIds[3]"] == "stop"
 
 
 FORM_1_3 = '<input name="temp-set-input[1]"><input name="temp-set-input[3]">'

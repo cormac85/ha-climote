@@ -63,8 +63,8 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
     @property
     def is_on(self) -> bool:
         """Return True if boost is currently active."""
-        # "5" means Boost is active
-        return self._zone_data.get("status") == "5"
+        # 5 means Boost is active (str() because the hub may send it as a number or a string)
+        return str(self._zone_data.get("status")) == "5"
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the boost switch."""

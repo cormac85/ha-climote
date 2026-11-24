@@ -14,7 +14,6 @@ from .const import (
     PATH_WAIT_STATUS,
     PATH_BOOST,
     PATH_TEMPERATURE,
-    PATH_DELIVERY_REPORT,
     PATH_SCHEDULE,
 )
 
@@ -53,6 +52,7 @@ class ClimoteAPI:
         self._pin = pin.strip()
         self._csrf_token = None
         self._schedule_id = None
+        self.gsm_reads = 0  # hub round trips since HA started, for the log line in _fetch_status
         self.zone_labels = {1: "Zone 1", 2: "Zone 2", 3: "Zone 3"}
 
     @property
@@ -319,6 +319,13 @@ class ClimoteAPI:
         # If we commanded a GSM force_gsm, the return value is `"awaiting response"`.
         # In this case we poll the async waiting endpoint.
         if force_gsm or status_data == "awaiting response":
+            # Greppable, one line per hub SMS round trip: count these to see what the allowance is spent on.
+            self.gsm_reads += 1
+            LOGGER.info(
+                "Climote GSM read #%d since start (reason: %s)",
+                self.gsm_reads,
+                "forced by caller" if force_gsm else "portal answered 'awaiting response' to a plain poll",
+            )
             LOGGER.debug("Status requires GSM fetch. Polling wait endpoint...")
             return await self._poll_gsm_status()
 
@@ -413,7 +420,7 @@ class ClimoteAPI:
             raise ValueError(f"Zone {zone_id} is not on the portal's temperature form {form_zones}")
 
         value = round(float(temperature) * 2) / 2
-        LOGGER.info("Setting zone %d target temperature to %s", zone_id, value)
+        LOGGER.info("Climote GSM command: set zone %d to %s (costs one SMS)", zone_id, value)
 
         payload = {
             f"temp-set-input[{i}]": value if i == zone_id else "nochange"
@@ -434,8 +441,8 @@ class ClimoteAPI:
         return True
 
     async def set_boost(self, zone_id: int, duration_hours: float) -> bool:
-        """Trigger boost for a specific zone and wait for delivery confirmation."""
-        LOGGER.info("Boosting zone %d for %s hours", zone_id, duration_hours)
+        """Trigger boost for a specific zone (one POST; the caller reads the status back)."""
+        LOGGER.info("Climote GSM command: boost zone %d for %s hours (costs one SMS)", zone_id, duration_hours)
 
         if not self._csrf_token:
             await self.login()
@@ -453,12 +460,14 @@ class ClimoteAPI:
             LOGGER.error("Failed to POST boost command: %s", err)
             return False
 
-        # Wait for delivery report
-        return await self._wait_for_delivery()
+        # No delivery wait, same as set_temperature: on this portal the delivery report never says
+        # DELIVERED, so waiting 90 s always ended in False and the caller skipped its status refresh,
+        # leaving the boost switch showing Off. The caller confirms by reading the hub's status.
+        return True
 
     async def cancel_boost(self, zone_id: int) -> bool:
         """Send stop boost command for a specific zone."""
-        LOGGER.info("Cancelling boost for zone %d", zone_id)
+        LOGGER.info("Climote GSM command: cancel boost on zone %d (costs one SMS)", zone_id)
 
         if not self._csrf_token:
             await self.login()
@@ -476,35 +485,5 @@ class ClimoteAPI:
             LOGGER.error("Failed to POST stop boost command: %s", err)
             return False
 
-        # Wait for delivery report
-        return await self._wait_for_delivery()
-
-    async def _wait_for_delivery(self) -> bool:
-        """Poll wait-for-delivery-report until DELIVERED/OK is returned.
-        
-        Max wait: 30 attempts × 3s = 90 seconds. Accounts for weak GSM signal.
-        """
-        max_attempts = 30
-        poll_delay = 3.0
-
-        for attempt in range(1, max_attempts + 1):
-            await asyncio.sleep(poll_delay)
-            try:
-                res = await self._request("GET", PATH_DELIVERY_REPORT)
-                status = res.strip().upper()
-                LOGGER.debug("Delivery status: %s (attempt %d/%d)", status, attempt, max_attempts)
-                
-                # Real API returns "DELIVERED" when command reaches the hub.
-                # "OK" kept as a fallback in case the response ever changes.
-                if status in ("OK", "DELIVERED"):
-                    LOGGER.debug("Command delivered successfully to GSM hub (status=%s)", status)
-                    return True
-                elif status == "PENDING":
-                    continue
-                else:
-                    LOGGER.warning("Unexpected delivery status: %s (attempt %d/%d)", status, attempt, max_attempts)
-            except Exception as err:
-                LOGGER.warning("Error waiting for delivery report on attempt %d: %s", attempt, err)
-
-        LOGGER.error("Command delivery report timed out after %d attempts", max_attempts)
-        return False
+        # No delivery wait (see set_boost).
+        return True
