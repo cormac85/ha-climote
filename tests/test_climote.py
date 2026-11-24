@@ -32,6 +32,7 @@ from custom_components.climote.api import (
     ClimoteAPI,
     ClimoteAuthError,
     ClimoteConnectionError,
+    ClimoteHubTimeout,
 )
 from custom_components.climote.const import BASE_URL
 
@@ -151,21 +152,43 @@ async def test_get_status_gsm_wait_loop():
 
 @pytest.mark.asyncio
 async def test_set_boost_success():
-    """Test triggering a boost and verifying the wait-for-delivery-report OK state."""
+    """A boost is one POST with no delivery poll (the portal's delivery report never completes)."""
     session = MagicMock(spec=aiohttp.ClientSession)
     api = ClimoteAPI(session, "test@email.com", "password")
     api._csrf_token = "csrf123"
 
     session.request.side_effect = [
-        make_mock_response(200, ""),          # POST boost
-        make_mock_response(200, "PENDING"),   # GET delivery report (attempt 1)
-        make_mock_response(200, "OK"),        # GET delivery report (attempt 2)
+        make_mock_response(200, ""),          # POST boost (no delivery poll follows)
     ]
 
     with patch("asyncio.sleep", AsyncMock()):
-        result = await api.set_boost(zone_id=1, duration_hours=1.0)
+        result = await api.set_boost(zone_id=3, duration_hours=1.0)
 
     assert result is True
+    assert session.request.call_count == 1
+    assert session.request.call_args.kwargs["data"] == {
+        "zoneIds[1]": "nochange",
+        "zoneIds[2]": "nochange",
+        "zoneIds[3]": 1.0,
+        "cs_token_rf": "csrf123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_boost_success():
+    """Cancelling a boost is one POST with no delivery poll, so the caller can refresh the status."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+
+    session.request.side_effect = [make_mock_response(200, "")]
+
+    with patch("asyncio.sleep", AsyncMock()):
+        result = await api.cancel_boost(zone_id=3)
+
+    assert result is True
+    assert session.request.call_count == 1
+    assert session.request.call_args.kwargs["data"]["zoneIds[3]"] == "stop"
 
 
 FORM_1_3 = '<input name="temp-set-input[1]"><input name="temp-set-input[3]">'
@@ -284,3 +307,42 @@ async def test_temperature_form_zones_relogs_in_when_the_page_is_the_login_page(
     api.login = fake_login
     assert await api.temperature_form_zones() == (1, 3)
     assert api._csrf_token == "new"
+
+
+@pytest.mark.asyncio
+async def test_gsm_timeout_falls_back_to_cache_once_and_does_not_poll_again():
+    """A silent hub gives up after one 90 s poll; it must not start another one."""
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+
+    session.request.side_effect = (
+        [make_mock_response(200, '"awaiting response"')]    # GET get-status?force=1
+        + [make_mock_response(200, "0")] * 30               # 30 polls, hub never answers
+        + [make_mock_response(200, '"awaiting response"')]  # the cached fallback: still waiting
+    )
+
+    with patch("asyncio.sleep", AsyncMock()):
+        with pytest.raises(ClimoteHubTimeout):
+            await api.get_status(force_gsm=True)
+
+    assert session.request.call_count == 32  # 1 + 30 + 1, then it stops
+
+
+@pytest.mark.asyncio
+async def test_gsm_timeout_returns_cached_status_when_the_portal_has_one():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    cached = {"zone1": {"status": None}, "unit_time": "12:00"}
+
+    session.request.side_effect = (
+        [make_mock_response(200, '"awaiting response"')]
+        + [make_mock_response(200, "0")] * 30
+        + [make_mock_response(200, json.dumps(cached))]
+    )
+
+    with patch("asyncio.sleep", AsyncMock()):
+        data = await api.get_status(force_gsm=True)
+
+    assert data == cached
