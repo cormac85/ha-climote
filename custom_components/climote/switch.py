@@ -3,6 +3,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -83,6 +84,8 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
             # show the boost now and let one read a minute later confirm it.
             self.coordinator.expect_boost(self._zone_id, True, float(duration))
             self.coordinator.schedule_confirmation()
+        else:
+            raise HomeAssistantError(f"Climote did not accept the boost command for {self._attr_name} (see the log)")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the boost switch."""
@@ -92,3 +95,5 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
         if success:
             self.coordinator.expect_boost(self._zone_id, False)
             self.coordinator.schedule_confirmation()
+        else:
+            raise HomeAssistantError(f"Climote did not accept the cancel command for {self._attr_name} (see the log)")

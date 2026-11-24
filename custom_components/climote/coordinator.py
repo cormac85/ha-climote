@@ -1,7 +1,8 @@
+from collections.abc import Callable
 from datetime import timedelta
 import async_timeout
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
@@ -41,11 +42,26 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         self.last_update_success_time = None
         self._boosts = BoostExpectations()
         self._cancel_confirm = None
+        self._cancel_expiry: dict[int, Callable[[], None]] = {}
 
     def expect_boost(self, zone_id: int, on: bool, duration_hours: float = 0.0) -> None:
         """Remember that a boost on/off command was just sent, and show that state meanwhile."""
-        self._boosts.expect(zone_id, on, duration_hours * 3600 if on else BOOST_OFF_GRACE)
+        ttl = duration_hours * 3600 if on else BOOST_OFF_GRACE
+        self._boosts.expect(zone_id, on, ttl)
         self.async_update_listeners()
+
+        # Entities only re-read their state when told to. Without this, an expectation that lapses
+        # (a boost the hub never reports as status 5) would leave the switch showing On until the
+        # next poll, which can be hours away.
+        if zone_id in self._cancel_expiry:
+            self._cancel_expiry.pop(zone_id)()
+
+        @callback
+        def _expired(_now) -> None:
+            self._cancel_expiry.pop(zone_id, None)
+            self.async_update_listeners()
+
+        self._cancel_expiry[zone_id] = async_call_later(self.hass, ttl + 1, _expired)
 
     def expected_boost(self, zone_id: int) -> bool | None:
         """The boost state the last command asked for, or None once the hub confirmed it or it lapsed."""
@@ -82,6 +98,9 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         if self._cancel_confirm is not None:
             self._cancel_confirm()
             self._cancel_confirm = None
+        for cancel in self._cancel_expiry.values():
+            cancel()
+        self._cancel_expiry.clear()
         await super().async_shutdown()
 
     async def _async_update_data(self) -> dict:

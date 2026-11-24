@@ -154,12 +154,16 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
             if success:
                 self.coordinator.expect_boost(self._zone_id, True, float(duration))
                 self.coordinator.schedule_confirmation()
+            else:
+                raise HomeAssistantError(f"Climote did not accept the boost command for zone {self._zone_id} (see the log)")
         elif hvac_mode == HVACMode.OFF:
             LOGGER.info("Setting HVAC Mode to OFF for zone %d (cancelling boost)", self._zone_id)
             success = await self.coordinator.api.cancel_boost(self._zone_id)
             if success:
                 self.coordinator.expect_boost(self._zone_id, False)
                 self.coordinator.schedule_confirmation()
+            else:
+                raise HomeAssistantError(f"Climote did not accept the cancel command for zone {self._zone_id} (see the log)")
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set the zone's target temperature through the portal's temperature form."""
