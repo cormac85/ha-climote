@@ -31,6 +31,14 @@ class ClimoteConnectionError(Exception):
     """Exception raised when connection to Climote fails."""
     pass
 
+class ClimoteHubTimeout(Exception):
+    """The hub did not answer a status request in time.
+
+    Deliberately not a ClimoteConnectionError: get_status retries those after a fresh login, which
+    would start another SMS and another 90 s poll.
+    """
+
+
 class ClimoteAuthError(Exception):
     """Exception raised when authentication fails."""
     pass
@@ -270,7 +278,7 @@ class ClimoteAPI:
             await self.login()
             return await self._fetch_status(force_gsm)
 
-    async def _fetch_status(self, force_gsm: bool = False) -> dict:
+    async def _fetch_status(self, force_gsm: bool = False, poll_if_awaiting: bool = True) -> dict:
         """Internal: fetch zone status (single attempt, no retry)."""
         force_val = "1" if force_gsm else "0"
         try:
@@ -318,7 +326,7 @@ class ClimoteAPI:
 
         # If we commanded a GSM force_gsm, the return value is `"awaiting response"`.
         # In this case we poll the async waiting endpoint.
-        if force_gsm or status_data == "awaiting response":
+        if force_gsm or (poll_if_awaiting and status_data == "awaiting response"):
             # Greppable, one line per hub SMS round trip: count these to see what the allowance is spent on.
             self.gsm_reads += 1
             LOGGER.info(
@@ -357,9 +365,16 @@ class ClimoteAPI:
             except Exception as err:
                 LOGGER.warning("Error during GSM poll attempt %d: %s", attempt, err)
 
-        LOGGER.error("GSM polling timed out after %d attempts. Returning cached/stale data.", max_attempts)
-        # Fallback: get cached status without forcing GSM
-        return await self.get_status(force_gsm=False)
+        LOGGER.error("GSM polling timed out after %d attempts. Falling back to the cached status.", max_attempts)
+        # Fallback: one cached read that never starts another poll. It used to call get_status, and
+        # when the portal answered "awaiting response" again that began another 90 s poll, and so on
+        # for as long as the hub stayed silent.
+        data = await self._fetch_status(force_gsm=False, poll_if_awaiting=False)
+        if not isinstance(data, dict) or "zone1" not in data:
+            raise ClimoteHubTimeout(
+                f"Hub did not answer within {int(max_attempts * poll_delay)} s and the portal has no cached status"
+            )
+        return data
 
     async def _send_form(self, path: str, payload: dict) -> None:
         """Internal: POST a form payload, retrying once after re-auth on failure."""
