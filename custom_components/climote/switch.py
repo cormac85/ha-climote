@@ -63,6 +63,10 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
     @property
     def is_on(self) -> bool:
         """Return True if boost is currently active."""
+        # The state a command just asked for wins until the hub confirms it (see the coordinator).
+        expected = self.coordinator.expected_boost(self._zone_id)
+        if expected is not None:
+            return expected
         # 5 means Boost is active (str() because the hub may send it as a number or a string)
         return str(self._zone_data.get("status")) == "5"
 
@@ -75,8 +79,10 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
 
         success = await self.coordinator.api.set_boost(self._zone_id, float(duration))
         if success:
-            # Force GSM refresh to get the updated status and minutes remaining immediately
-            await self.coordinator.async_force_gsm_refresh()
+            # An immediate status read returns the state from before the hub got the command, so
+            # show the boost now and let one read a minute later confirm it.
+            self.coordinator.expect_boost(self._zone_id, True, float(duration))
+            self.coordinator.schedule_confirmation()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the boost switch."""
@@ -84,5 +90,5 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
         
         success = await self.coordinator.api.cancel_boost(self._zone_id)
         if success:
-            # Force GSM refresh to get the updated status immediately
-            await self.coordinator.async_force_gsm_refresh()
+            self.coordinator.expect_boost(self._zone_id, False)
+            self.coordinator.schedule_confirmation()

@@ -17,6 +17,7 @@ sys.modules['homeassistant.core'] = MagicMock()
 sys.modules['homeassistant.exceptions'] = MagicMock()
 sys.modules['homeassistant.helpers'] = MagicMock()
 sys.modules['homeassistant.util'] = MagicMock()
+sys.modules['homeassistant.helpers.event'] = MagicMock()
 sys.modules['homeassistant.helpers.update_coordinator'] = MagicMock()
 sys.modules['homeassistant.helpers.entity_platform'] = MagicMock()
 sys.modules['homeassistant.helpers.aiohttp_client'] = MagicMock()
@@ -158,6 +159,7 @@ async def test_set_boost_success():
     api._csrf_token = "csrf123"
 
     session.request.side_effect = [
+        make_mock_response(200, FORM_1_3),    # GET temperature page (which zones exist)
         make_mock_response(200, ""),          # POST boost (no delivery poll follows)
     ]
 
@@ -165,13 +167,26 @@ async def test_set_boost_success():
         result = await api.set_boost(zone_id=3, duration_hours=1.0)
 
     assert result is True
-    assert session.request.call_count == 1
-    assert session.request.call_args.kwargs["data"] == {
+    assert session.request.call_count == 2
+    # Like the portal's own form: zones 1 and 3 only, no zoneIds[2].
+    assert session.request.call_args_list[1].kwargs["data"] == {
         "zoneIds[1]": "nochange",
-        "zoneIds[2]": "nochange",
         "zoneIds[3]": 1.0,
         "cs_token_rf": "csrf123",
     }
+
+
+@pytest.mark.asyncio
+async def test_set_boost_rejects_a_zone_the_portal_does_not_have():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    session.request.side_effect = [make_mock_response(200, FORM_1_3)]
+
+    result = await api.set_boost(zone_id=2, duration_hours=1.0)
+
+    assert result is False
+    assert session.request.call_count == 1  # no POST
 
 
 @pytest.mark.asyncio
@@ -181,14 +196,18 @@ async def test_cancel_boost_success():
     api = ClimoteAPI(session, "test@email.com", "password")
     api._csrf_token = "csrf123"
 
-    session.request.side_effect = [make_mock_response(200, "")]
+    session.request.side_effect = [make_mock_response(200, FORM_1_3), make_mock_response(200, "")]
 
     with patch("asyncio.sleep", AsyncMock()):
         result = await api.cancel_boost(zone_id=3)
 
     assert result is True
-    assert session.request.call_count == 1
-    assert session.request.call_args.kwargs["data"]["zoneIds[3]"] == "stop"
+    assert session.request.call_count == 2
+    assert session.request.call_args_list[1].kwargs["data"] == {
+        "zoneIds[1]": "nochange",
+        "zoneIds[3]": "stop",
+        "cs_token_rf": "csrf123",
+    }
 
 
 FORM_1_3 = '<input name="temp-set-input[1]"><input name="temp-set-input[3]">'
@@ -346,3 +365,66 @@ async def test_gsm_timeout_returns_cached_status_when_the_portal_has_one():
         data = await api.get_status(force_gsm=True)
 
     assert data == cached
+
+
+# --- what a boost command asked for (boost_state.py) -------------------------------------------
+
+from custom_components.climote.boost_state import BoostExpectations, is_boosting
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_is_boosting_accepts_a_number_or_a_string():
+    assert is_boosting({"status": 5})
+    assert is_boosting({"status": "5"})
+    assert not is_boosting({"status": None})
+    assert not is_boosting({})
+
+
+def test_requested_boost_shows_on_until_the_hub_confirms():
+    clock = FakeClock()
+    b = BoostExpectations(clock)
+    b.expect(3, True, 900)
+    assert b.get(3) is True
+    # A stale read straight after the command (status still None) must not flip it back.
+    confirmed, contradicted = b.reconcile({"zone3": {"status": None, "timeRemaining": None}})
+    assert confirmed == [] and contradicted == [(3, {"status": None, "timeRemaining": None})]
+    assert b.get(3) is True
+    # The hub catches up: expectation is dropped and the hub's own state takes over.
+    confirmed, _ = b.reconcile({"zone3": {"status": 5}})
+    assert confirmed == [3]
+    assert b.get(3) is None
+
+
+def test_requested_cancel_shows_off_until_the_hub_confirms():
+    b = BoostExpectations(FakeClock())
+    b.expect(3, False, 600)
+    assert b.get(3) is False
+    b.reconcile({"zone3": {"status": "5"}})  # stale read, still boosting
+    assert b.get(3) is False
+    confirmed, _ = b.reconcile({"zone3": {"status": None}})
+    assert confirmed == [3] and b.get(3) is None
+
+
+def test_unconfirmed_boost_lapses_when_the_boost_would_have_ended():
+    clock = FakeClock()
+    b = BoostExpectations(clock)
+    b.expect(3, True, 900)  # the hub never reports it
+    clock.now += 899
+    assert b.get(3) is True
+    clock.now += 2
+    assert b.get(3) is None
+
+
+def test_expectations_are_per_zone():
+    b = BoostExpectations(FakeClock())
+    b.expect(3, True, 900)
+    assert b.get(1) is None
+    b.reconcile({"zone1": {"status": None}, "zone3": {"status": None}})
+    assert b.get(3) is True

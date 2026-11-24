@@ -100,6 +100,9 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
         # status "5" = Boost is active
         # status "1" = Schedule/timer is running (heating)
         # status None or "0" = idle / off
+        expected = self.coordinator.expected_boost(self._zone_id)
+        if expected is not None:
+            return HVACMode.HEAT if expected else HVACMode.OFF
         status = str(self._zone_data.get("status"))
         if status in ("5", "1"):
             return HVACMode.HEAT
@@ -113,6 +116,9 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
     @property
     def hvac_action(self) -> HVACAction | None:
         """Return the current HVAC action (HEATING or IDLE)."""
+        expected = self.coordinator.expected_boost(self._zone_id)
+        if expected is not None:
+            return HVACAction.HEATING if expected else HVACAction.IDLE
         status = str(self._zone_data.get("status"))
         # "5" = Boost, "1" = Schedule-driven heat
         if status in ("5", "1"):
@@ -146,12 +152,14 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
             LOGGER.info("Setting HVAC Mode to HEAT for zone %d (boosting %s hours)", self._zone_id, duration)
             success = await self.coordinator.api.set_boost(self._zone_id, duration)
             if success:
-                await self.coordinator.async_force_gsm_refresh()
+                self.coordinator.expect_boost(self._zone_id, True, float(duration))
+                self.coordinator.schedule_confirmation()
         elif hvac_mode == HVACMode.OFF:
             LOGGER.info("Setting HVAC Mode to OFF for zone %d (cancelling boost)", self._zone_id)
             success = await self.coordinator.api.cancel_boost(self._zone_id)
             if success:
-                await self.coordinator.async_force_gsm_refresh()
+                self.coordinator.expect_boost(self._zone_id, False)
+                self.coordinator.schedule_confirmation()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set the zone's target temperature through the portal's temperature form."""
