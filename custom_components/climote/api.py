@@ -462,10 +462,15 @@ class ClimoteAPI:
         if not self._csrf_token:
             await self.login()
 
-        # Build payload dynamically: set duration for target zone, "nochange" for others
+        # Only the zones the portal's own form has (zones 1 and 3 here; the browser sends no
+        # zoneIds[2]), "nochange" for every zone but the one being boosted.
+        form_zones = await self.temperature_form_zones()
+        if zone_id not in form_zones:
+            LOGGER.error("Zone %d is not on the portal's form %s, so it cannot be boosted", zone_id, form_zones)
+            return False
         payload = {
             f"zoneIds[{i}]": duration_hours if i == zone_id else "nochange"
-            for i in range(1, 4)
+            for i in form_zones
         }
         payload["cs_token_rf"] = self._csrf_token
 
@@ -487,10 +492,14 @@ class ClimoteAPI:
         if not self._csrf_token:
             await self.login()
 
-        # Build payload: "stop" for target zone, "nochange" for others
+        # Same zones as the portal's form (see set_boost): "stop" for the target, "nochange" for the rest.
+        form_zones = await self.temperature_form_zones()
+        if zone_id not in form_zones:
+            LOGGER.error("Zone %d is not on the portal's form %s, so its boost cannot be cancelled", zone_id, form_zones)
+            return False
         payload = {
             f"zoneIds[{i}]": "stop" if i == zone_id else "nochange"
-            for i in range(1, 4)
+            for i in form_zones
         }
         payload["cs_token_rf"] = self._csrf_token
 
