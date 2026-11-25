@@ -61,6 +61,7 @@ class ClimoteAPI:
         self._csrf_token = None
         self._schedule_id = None
         self.gsm_reads = 0  # hub round trips since HA started, for the log line in _fetch_status
+        self.last_read_stale = False  # True when the hub was silent and the portal's cache was returned
         self.zone_labels = {1: "Zone 1", 2: "Zone 2", 3: "Zone 3"}
 
     @property
@@ -260,6 +261,7 @@ class ClimoteAPI:
         stuck after a session timeout.
         """
         LOGGER.debug("Fetching Climote status (force_gsm=%s)", force_gsm)
+        self.last_read_stale = False
 
         # Ensure we are logged in by checking CSRF token
         if not self._csrf_token:
@@ -374,6 +376,7 @@ class ClimoteAPI:
             raise ClimoteHubTimeout(
                 f"Hub did not answer within {int(max_attempts * poll_delay)} s and the portal has no cached status"
             )
+        self.last_read_stale = True
         return data
 
     async def _send_form(self, path: str, payload: dict) -> None:

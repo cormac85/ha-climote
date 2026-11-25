@@ -21,8 +21,11 @@ CONF_DEVICE_ID = "device_id"   # Climote Device No. — the 10-digit hub identif
 CONF_PIN = "pin"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_BOOST_DURATION = "boost_duration"
+CONF_SLEEP_START = "sleep_start"
+CONF_SLEEP_END = "sleep_end"
 
 # Defaults
 DEFAULT_POLL_INTERVAL = 1800  # 30 minutes in seconds
 DEFAULT_BOOST_DURATION = 1.0   # 1 hour
+DEFAULT_SLEEP_TIME = "00:00:00"  # start == end: no sleep period
 MIN_POLL_INTERVAL = 1800       # 30 minutes minimum to protect GSM limits

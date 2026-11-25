@@ -59,7 +59,7 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
     def _zone_data(self) -> dict[str, Any]:
         """Helper to get current status data for this specific zone."""
         key = f"zone{self._zone_id}"
-        return self.coordinator.data.get(key, {})
+        return (self.coordinator.data or {}).get(key, {})
 
     @property
     def is_on(self) -> bool:

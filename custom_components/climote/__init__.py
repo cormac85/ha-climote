@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_change
 
 from .const import (
     DOMAIN,
@@ -13,6 +14,9 @@ from .const import (
     CONF_PIN,
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
+    CONF_SLEEP_START,
+    CONF_SLEEP_END,
+    DEFAULT_SLEEP_TIME,
 )
 from .api import ClimoteAPI
 from .coordinator import ClimoteDataUpdateCoordinator
@@ -52,10 +56,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass,
         api,
         poll_interval_seconds=int(poll_interval),
+        sleep_start=entry.options.get(CONF_SLEEP_START, DEFAULT_SLEEP_TIME),
+        sleep_end=entry.options.get(CONF_SLEEP_END, DEFAULT_SLEEP_TIME),
     )
 
-    # Fetch initial state
-    await coordinator.async_config_entry_first_refresh()
+    # Fetch initial state. Not async_config_entry_first_refresh: if the hub is silent that retries the
+    # whole setup over and over, and each try can cost an SMS. Instead the entities start unavailable
+    # and the next scheduled poll tries again.
+    await coordinator.async_refresh()
 
     # Store state
     hass.data[DOMAIN][entry.entry_id] = {
@@ -65,6 +73,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Read the hub as soon as the sleep period ends, not up to a whole poll interval later.
+    if coordinator.sleep_start != coordinator.sleep_end:
+
+        async def _wake(_now) -> None:
+            await coordinator.async_request_refresh()
+
+        entry.async_on_unload(
+            async_track_time_change(
+                hass, _wake, hour=coordinator.sleep_end.hour, minute=coordinator.sleep_end.minute, second=0
+            )
+        )
 
     # Register listener for option updates
     entry.async_on_unload(entry.add_update_listener(async_update_options))

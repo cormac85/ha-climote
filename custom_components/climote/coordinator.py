@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import time
 from datetime import timedelta
 import async_timeout
 
@@ -7,9 +8,11 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, LOGGER, DEFAULT_POLL_INTERVAL
+from .const import DOMAIN, LOGGER, DEFAULT_POLL_INTERVAL, DEFAULT_SLEEP_TIME
 from .api import ClimoteAPI, ClimoteConnectionError, ClimoteAuthError
 from .boost_state import BoostExpectations
+from .setpoint_state import SetpointExpectations, SETPOINT_SETTLE_SECONDS
+from .sleep_period import in_sleep_period, parse_time
 
 # A boost or cancel is an SMS to the hub, and the hub needs a while to act on it: a status read a
 # second later still returns the old state. So after a command the entities show the state that was
@@ -18,6 +21,8 @@ BOOST_CONFIRM_DELAY = 60
 # How long a requested "boost off" is believed without the hub agreeing. A requested "boost on" is
 # believed for the boost's own duration.
 BOOST_OFF_GRACE = 600
+# A poll can log in again and then wait 90 s for the hub.
+POLL_TIMEOUT = 150
 
 
 class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
@@ -28,6 +33,8 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         hass: HomeAssistant,
         api: ClimoteAPI,
         poll_interval_seconds: int = DEFAULT_POLL_INTERVAL,
+        sleep_start: str = DEFAULT_SLEEP_TIME,
+        sleep_end: str = DEFAULT_SLEEP_TIME,
     ) -> None:
         """Initialize the coordinator."""
         self.api = api
@@ -41,7 +48,11 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         # HA's coordinator only has a success flag, no timestamp; the Last Updated sensor reads this.
         self.last_update_success_time = None
         self._boosts = BoostExpectations()
+        self._setpoints = SetpointExpectations()
+        self.sleep_start = parse_time(sleep_start)
+        self.sleep_end = parse_time(sleep_end)
         self._cancel_confirm = None
+        self._confirm_due = 0.0
         self._cancel_expiry: dict[int, Callable[[], None]] = {}
 
     def expect_boost(self, zone_id: int, on: bool, duration_hours: float = 0.0) -> None:
@@ -67,7 +78,22 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         """The boost state the last command asked for, or None once the hub confirmed it or it lapsed."""
         return self._boosts.get(zone_id)
 
+    def expect_setpoint(self, zone_id: int, temperature: float) -> None:
+        """Show a just-sent temperature and read the hub once it has had time to apply it."""
+        self._setpoints.expect(zone_id, temperature)
+        self.async_update_listeners()
+        self.schedule_confirmation(SETPOINT_SETTLE_SECONDS)
+
+    def expected_setpoint(self, zone_id: int) -> float | None:
+        """The temperature the last command asked for, until a read of the hub settles it."""
+        return self._setpoints.get(zone_id)
+
     def _reconcile_expected(self, data: dict, forced: bool = False) -> None:
+        reached, overruled = self._setpoints.reconcile(data, fresh=not self.api.last_read_stale)
+        for zone_id in reached:
+            LOGGER.info("Zone %d: hub confirms the requested temperature", zone_id)
+        for zone_id, wanted, reported in overruled:
+            LOGGER.warning("Zone %d: asked for %s C but the hub reports %s C", zone_id, wanted, reported)
         confirmed, contradicted = self._boosts.reconcile(data)
         for zone_id in confirmed:
             LOGGER.info("Zone %d: hub confirms the requested boost state", zone_id)
@@ -81,9 +107,15 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
             )
 
     def schedule_confirmation(self, delay: float = BOOST_CONFIRM_DELAY) -> None:
-        """One forced hub read after `delay` seconds (one SMS), replacing any read already waiting."""
+        """One forced hub read (one SMS) at least `delay` seconds from now.
+
+        A read already waiting is folded into this one, at whichever of the two times is later.
+        """
+        now = time.monotonic()
         if self._cancel_confirm is not None:
             self._cancel_confirm()
+            delay = max(delay, self._confirm_due - now)
+        self._confirm_due = now + delay
 
         async def _confirm(_now) -> None:
             self._cancel_confirm = None
@@ -105,9 +137,16 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
 
     async def _async_update_data(self) -> dict:
         """Fetch data from Climote Cloud (regular cached polling)."""
+        # Skip scheduled polls while asleep. With no data yet (HA has just started) read anyway.
+        if self.data and in_sleep_period(dt_util.now().time(), self.sleep_start, self.sleep_end):
+            LOGGER.debug("Climote sleep period: skipping this poll")
+            if not self.last_update_success:
+                raise UpdateFailed("Sleep period, and the last read failed")
+            return self.data
+
         LOGGER.debug("Climote coordinator polling cached state...")
         try:
-            async with async_timeout.timeout(30):
+            async with async_timeout.timeout(POLL_TIMEOUT):
                 # Standard poll uses force_gsm=False to avoid expensive SMS
                 data = await self.api.get_status(force_gsm=False)
                 
