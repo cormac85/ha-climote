@@ -68,11 +68,14 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
     def _zone_data(self) -> dict[str, Any]:
         """Helper to get current status data for this specific zone."""
         key = f"zone{self._zone_id}"
-        return self.coordinator.data.get(key, {})
+        return (self.coordinator.data or {}).get(key, {})
 
     @property
     def native_target_temperature(self) -> float | None:
         """Return the target temperature (thermostat setting)."""
+        expected = self.coordinator.expected_setpoint(self._zone_id)
+        if expected is not None:
+            return expected
         try:
             thermostat = self._zone_data.get("thermostat")
             # Zones without a physical sensor report "00" or 0 — treat as unknown
@@ -180,14 +183,8 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
                 f"Climote rejected {temperature} C for zone {self._zone_id}"
             )
 
-        # The portal's delivery report never completes, so confirm by asking the hub (SMS round trip).
-        try:
-            await self.coordinator.async_force_gsm_refresh()
-        except Exception as err:  # the command was accepted; do not fail the call on a slow hub
-            LOGGER.warning("Could not read back zone %d after setting %s C: %s", self._zone_id, temperature, err)
-            return
-        if self.native_target_temperature != round(float(temperature) * 2) / 2:
-            LOGGER.warning(
-                "Zone %d reads %s C after setting %s C; the hub may not have applied it yet",
-                self._zone_id, self.native_target_temperature, temperature,
-            )
+        # The portal's delivery report never completes, and an immediate read returns the old value.
+        # Show the requested temperature and let one later read confirm it.
+        # HA sets a user id on actions from the UI or app, and none on automation runs.
+        by_person = self._context is not None and self._context.user_id is not None
+        self.coordinator.expect_setpoint(self._zone_id, round(float(temperature) * 2) / 2, by_person)

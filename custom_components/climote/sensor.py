@@ -59,7 +59,7 @@ class ClimoteSensorBase(CoordinatorEntity[ClimoteDataUpdateCoordinator], SensorE
     def _zone_data(self) -> dict[str, Any]:
         """Helper to get current status data for this specific zone."""
         key = f"zone{self._zone_id}"
-        return self.coordinator.data.get(key, {})
+        return (self.coordinator.data or {}).get(key, {})
 
 class ClimoteTemperatureSensor(ClimoteSensorBase):
     """Sensor reporting the current temperature inside a Climote Zone."""

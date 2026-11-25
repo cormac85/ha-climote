@@ -15,6 +15,13 @@ sys.modules['homeassistant.config_entries'] = MagicMock()
 sys.modules['homeassistant.const'] = MagicMock()
 sys.modules['homeassistant.core'] = MagicMock()
 sys.modules['homeassistant.exceptions'] = MagicMock()
+
+
+class ConfigEntryNotReady(Exception):
+    """Stand-in for HA's exception, which must be a real class to be raised."""
+
+
+sys.modules['homeassistant.exceptions'].ConfigEntryNotReady = ConfigEntryNotReady
 sys.modules['homeassistant.helpers'] = MagicMock()
 sys.modules['homeassistant.util'] = MagicMock()
 sys.modules['homeassistant.helpers.event'] = MagicMock()
@@ -365,6 +372,7 @@ async def test_gsm_timeout_returns_cached_status_when_the_portal_has_one():
         data = await api.get_status(force_gsm=True)
 
     assert data == cached
+    assert api.last_read_stale
 
 
 # --- what a boost command asked for (boost_state.py) -------------------------------------------
@@ -428,3 +436,91 @@ def test_expectations_are_per_zone():
     assert b.get(1) is None
     b.reconcile({"zone1": {"status": None}, "zone3": {"status": None}})
     assert b.get(3) is True
+
+
+# --- a requested temperature (setpoint_state.py) -----------------------------------------------
+
+from datetime import time
+
+from custom_components.climote.setpoint_state import SetpointExpectations, SETPOINT_SETTLE_SECONDS
+from custom_components.climote.sleep_period import in_sleep_period, parse_time
+
+
+def reading(value):
+    return {"zone1": {"thermostat": value}}
+
+
+def test_requested_temperature_survives_early_and_stale_reads():
+    clock = FakeClock()
+    s = SetpointExpectations(clock)
+    s.expect(1, 18.0)
+    assert s.reconcile(reading(20), fresh=True) == ([], [])  # too early to say
+    clock.now += SETPOINT_SETTLE_SECONDS
+    assert s.reconcile(reading(20), fresh=False) == ([], [])  # hub silent, cached copy
+    assert s.get(1) == 18.0
+    assert s.reconcile(reading("18"), fresh=True) == ([1], [])
+    assert s.get(1) is None
+
+
+def test_a_settled_fresh_read_overrules_the_requested_temperature():
+    clock = FakeClock()
+    s = SetpointExpectations(clock)
+    s.expect(1, 19.0)
+    clock.now += SETPOINT_SETTLE_SECONDS
+    assert s.reconcile(reading(15), fresh=True) == ([], [(1, 19.0, 15)])
+    assert s.get(1) is None
+
+
+def test_a_read_without_the_zone_leaves_the_expectation():
+    s = SetpointExpectations(FakeClock())
+    s.expect(1, 19.0)
+    assert s.reconcile({}, fresh=True) == ([], [])
+    assert s.get(1) == 19.0
+
+
+@pytest.mark.parametrize(
+    "now, start, end, asleep",
+    [
+        ("22:59", "23:00", "08:00", False),
+        ("23:00", "23:00", "08:00", True),
+        ("03:00", "23:00", "08:00", True),
+        ("08:00", "23:00", "08:00", False),
+        ("13:00", "12:00", "14:00", True),
+        ("15:00", "12:00", "14:00", False),
+        ("00:00", "00:00", "00:00", False),
+    ],
+)
+def test_sleep_period(now, start, end, asleep):
+    assert in_sleep_period(parse_time(now), parse_time(start), parse_time(end)) is asleep
+
+
+def test_parse_time_falls_back_to_midnight():
+    assert parse_time(None) == parse_time("nonsense") == time(0, 0)
+
+
+# --- setup (__init__.py) -----------------------------------------------------------------------
+
+import custom_components.climote as integration
+
+
+def setup_args(login_error):
+    api = MagicMock()
+    api.login = AsyncMock(side_effect=login_error)
+    entry = MagicMock()
+    entry.data = {"email": "test@email.com", "device_id": "1234567890"}
+    return api, MagicMock(), entry
+
+
+@pytest.mark.asyncio
+async def test_setup_is_retried_when_the_portal_cannot_be_reached():
+    api, hass, entry = setup_args(ClimoteConnectionError("no network"))
+    with patch.object(integration, "ClimoteAPI", return_value=api):
+        with pytest.raises(ConfigEntryNotReady):
+            await integration.async_setup_entry(hass, entry)
+
+
+@pytest.mark.asyncio
+async def test_setup_gives_up_on_rejected_credentials():
+    api, hass, entry = setup_args(ClimoteAuthError("bad pin"))
+    with patch.object(integration, "ClimoteAPI", return_value=api):
+        assert await integration.async_setup_entry(hass, entry) is False
