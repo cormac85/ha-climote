@@ -52,7 +52,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 for mod in ['homeassistant','homeassistant.config_entries','homeassistant.const',
             'homeassistant.core','homeassistant.helpers','homeassistant.helpers.update_coordinator',
             'homeassistant.helpers.entity_platform','homeassistant.helpers.aiohttp_client',
-            'homeassistant.helpers.config_validation','homeassistant.util','homeassistant.helpers.event','homeassistant.components',
+            'homeassistant.helpers.config_validation','homeassistant.util','homeassistant.helpers.event','homeassistant.exceptions','homeassistant.components',
             'homeassistant.components.climate','homeassistant.components.switch',
             'homeassistant.components.sensor']:
     sys.modules.setdefault(mod, MagicMock())

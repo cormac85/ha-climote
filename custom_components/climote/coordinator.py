@@ -78,11 +78,14 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         """The boost state the last command asked for, or None once the hub confirmed it or it lapsed."""
         return self._boosts.get(zone_id)
 
-    def expect_setpoint(self, zone_id: int, temperature: float) -> None:
-        """Show a just-sent temperature and read the hub once it has had time to apply it."""
+    def expect_setpoint(self, zone_id: int, temperature: float, by_person: bool) -> None:
+        """Show a just-sent temperature and read the hub once it has had time to apply it.
+
+        In the sleep period only a change made by a person gets that read; others wait for the morning.
+        """
         self._setpoints.expect(zone_id, temperature)
         self.async_update_listeners()
-        self.schedule_confirmation(SETPOINT_SETTLE_SECONDS)
+        self.schedule_confirmation(SETPOINT_SETTLE_SECONDS, override_sleep=by_person)
 
     def expected_setpoint(self, zone_id: int) -> float | None:
         """The temperature the last command asked for, until a read of the hub settles it."""
@@ -106,11 +109,15 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
                 zone_id, zone.get("status"), zone.get("timeRemaining"),
             )
 
-    def schedule_confirmation(self, delay: float = BOOST_CONFIRM_DELAY) -> None:
+    def schedule_confirmation(self, delay: float = BOOST_CONFIRM_DELAY, override_sleep: bool = False) -> None:
         """One forced hub read (one SMS) at least `delay` seconds from now.
 
         A read already waiting is folded into this one, at whichever of the two times is later.
+        Skipped in the sleep period unless `override_sleep`; a read already waiting is left alone.
         """
+        if not override_sleep and self._asleep():
+            LOGGER.debug("Climote sleep period: no confirmation read")
+            return
         now = time.monotonic()
         if self._cancel_confirm is not None:
             self._cancel_confirm()
@@ -126,6 +133,9 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
 
         self._cancel_confirm = async_call_later(self.hass, delay, _confirm)
 
+    def _asleep(self) -> bool:
+        return in_sleep_period(dt_util.now().time(), self.sleep_start, self.sleep_end)
+
     async def async_shutdown(self) -> None:
         if self._cancel_confirm is not None:
             self._cancel_confirm()
@@ -138,7 +148,7 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
     async def _async_update_data(self) -> dict:
         """Fetch data from Climote Cloud (regular cached polling)."""
         # Skip scheduled polls while asleep. With no data yet (HA has just started) read anyway.
-        if self.data and in_sleep_period(dt_util.now().time(), self.sleep_start, self.sleep_end):
+        if self.data and self._asleep():
             LOGGER.debug("Climote sleep period: skipping this poll")
             if not self.last_update_success:
                 raise UpdateFailed("Sleep period, and the last read failed")

@@ -15,6 +15,13 @@ sys.modules['homeassistant.config_entries'] = MagicMock()
 sys.modules['homeassistant.const'] = MagicMock()
 sys.modules['homeassistant.core'] = MagicMock()
 sys.modules['homeassistant.exceptions'] = MagicMock()
+
+
+class ConfigEntryNotReady(Exception):
+    """Stand-in for HA's exception, which must be a real class to be raised."""
+
+
+sys.modules['homeassistant.exceptions'].ConfigEntryNotReady = ConfigEntryNotReady
 sys.modules['homeassistant.helpers'] = MagicMock()
 sys.modules['homeassistant.util'] = MagicMock()
 sys.modules['homeassistant.helpers.event'] = MagicMock()
@@ -489,3 +496,31 @@ def test_sleep_period(now, start, end, asleep):
 
 def test_parse_time_falls_back_to_midnight():
     assert parse_time(None) == parse_time("nonsense") == time(0, 0)
+
+
+# --- setup (__init__.py) -----------------------------------------------------------------------
+
+import custom_components.climote as integration
+
+
+def setup_args(login_error):
+    api = MagicMock()
+    api.login = AsyncMock(side_effect=login_error)
+    entry = MagicMock()
+    entry.data = {"email": "test@email.com", "device_id": "1234567890"}
+    return api, MagicMock(), entry
+
+
+@pytest.mark.asyncio
+async def test_setup_is_retried_when_the_portal_cannot_be_reached():
+    api, hass, entry = setup_args(ClimoteConnectionError("no network"))
+    with patch.object(integration, "ClimoteAPI", return_value=api):
+        with pytest.raises(ConfigEntryNotReady):
+            await integration.async_setup_entry(hass, entry)
+
+
+@pytest.mark.asyncio
+async def test_setup_gives_up_on_rejected_credentials():
+    api, hass, entry = setup_args(ClimoteAuthError("bad pin"))
+    with patch.object(integration, "ClimoteAPI", return_value=api):
+        assert await integration.async_setup_entry(hass, entry) is False

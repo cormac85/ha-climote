@@ -3,6 +3,7 @@ import asyncio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_change
 
@@ -18,7 +19,7 @@ from .const import (
     CONF_SLEEP_END,
     DEFAULT_SLEEP_TIME,
 )
-from .api import ClimoteAPI
+from .api import ClimoteAPI, ClimoteConnectionError
 from .coordinator import ClimoteDataUpdateCoordinator
 
 PLATFORMS = [Platform.CLIMATE, Platform.SWITCH, Platform.SENSOR, Platform.NUMBER]
@@ -41,6 +42,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Login and auto-discover schedule details, labels, and CSRF token
     try:
         await api.login()
+    except ClimoteConnectionError as err:
+        # No network or portal down (say, just after a reboot): HA tries again later. A login sends
+        # nothing to the hub, so retrying costs no SMS.
+        raise ConfigEntryNotReady(f"Could not reach Climote: {err}") from err
     except Exception as err:
         LOGGER.error("Failed to authenticate with Climote servers during setup: %s", err)
         return False

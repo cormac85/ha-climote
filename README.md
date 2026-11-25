@@ -76,7 +76,7 @@ After setup, click **Configure** on the integration to adjust:
 |---|---|---|
 | **Polling Interval** | 1800s (30 min) | How often to refresh cached cloud status |
 | **Default Boost Duration** | 1 hour | Duration used when toggling boost via switch/climate |
-| **Sleep period start / end** | off (both 00:00) | No scheduled polls in this daily window, to save SMS. One read when it ends. HA starting with no data still reads once |
+| **Sleep period start / end** | off (both 00:00) | No scheduled polls in this daily window, to save SMS. Boosts and automated temperature changes get no confirmation read either; a temperature changed by a person still does. One read when it ends. HA starting with no data still reads once |
 
 > ⚠️ **Do not set polling below 1800s (30 min).** Climote uses GSM/SMS to communicate with the hub. Excessive polling will exhaust your SMS credit.
 

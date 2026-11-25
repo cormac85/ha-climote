@@ -185,4 +185,6 @@ class ClimoteZoneClimate(CoordinatorEntity[ClimoteDataUpdateCoordinator], Climat
 
         # The portal's delivery report never completes, and an immediate read returns the old value.
         # Show the requested temperature and let one later read confirm it.
-        self.coordinator.expect_setpoint(self._zone_id, round(float(temperature) * 2) / 2)
+        # HA sets a user id on actions from the UI or app, and none on automation runs.
+        by_person = self._context is not None and self._context.user_id is not None
+        self.coordinator.expect_setpoint(self._zone_id, round(float(temperature) * 2) / 2, by_person)

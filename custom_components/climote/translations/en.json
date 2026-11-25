@@ -40,7 +40,7 @@
         "data_description": {
           "poll_interval": "How often to fetch status from the cloud cache. Minimum 1800s (30 min).",
           "boost_duration": "Select how long to boost when triggered (in 15-minute intervals).",
-          "sleep_start": "No scheduled polls from this time. Commands and their confirmation reads still happen.",
+          "sleep_start": "No scheduled polls from this time. Commands are still sent, but only a temperature changed by a person is read back.",
           "sleep_end": "Polling resumes with a read at this time. Set both the same to turn the sleep period off."
         }
       }
