@@ -353,6 +353,7 @@ async def test_gsm_timeout_falls_back_to_cache_once_and_does_not_poll_again():
             await api.get_status(force_gsm=True)
 
     assert session.request.call_count == 32  # 1 + 30 + 1, then it stops
+    assert api.health.timeouts == 1  # one read, however many times the portal was asked
 
 
 @pytest.mark.asyncio
@@ -373,6 +374,7 @@ async def test_gsm_timeout_returns_cached_status_when_the_portal_has_one():
 
     assert data == cached
     assert api.last_read_stale
+    assert api.health.timeouts == 1 and api.health.last_reply is None
 
 
 # --- what a boost command asked for (boost_state.py) -------------------------------------------
@@ -524,3 +526,75 @@ async def test_setup_gives_up_on_rejected_credentials():
     api, hass, entry = setup_args(ClimoteAuthError("bad pin"))
     with patch.object(integration, "ClimoteAPI", return_value=api):
         assert await integration.async_setup_entry(hass, entry) is False
+
+
+# --- is the hub answering (hub_health.py) ------------------------------------------------------
+
+from custom_components.climote.hub_health import HubHealth, PollAction, PROBE_SECONDS, SILENT_AFTER
+
+
+def test_hub_counts_as_silent_only_after_several_unanswered_reads_in_a_row():
+    h = HubHealth(FakeClock())
+    for _ in range(SILENT_AFTER - 1):
+        h.timeout()
+    assert not h.silent and h.may_read()
+    h.reply()  # one answer starts the count again
+    h.timeout()
+    assert not h.silent
+
+
+def test_silent_hub_is_tested_every_few_hours_and_a_reply_restores_it():
+    clock = FakeClock()
+    changes = []
+    h = HubHealth(clock)
+    h.on_change = lambda: changes.append(h.silent)
+    for _ in range(SILENT_AFTER):
+        h.timeout()
+    assert h.silent and not h.may_read()
+    clock.now += PROBE_SECONDS - 3600
+    assert not h.may_read()
+    clock.now += 3599  # a poll timer a second early still counts
+    assert h.may_read()
+    h.timeout()  # the test read also goes unanswered: wait again
+    assert not h.may_read()
+    h.reply()
+    assert not h.silent and h.may_read() and h.last_reply is not None
+    assert changes[-2:] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_an_answered_gsm_read_records_a_hub_reply():
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    session.request.side_effect = [
+        # The portal double-encodes its status reply.
+        make_mock_response(200, json.dumps(json.dumps("awaiting response"))),
+        make_mock_response(200, json.dumps({"zone1": {}})),
+    ]
+    with patch("asyncio.sleep", AsyncMock()):
+        await api.get_status()
+    assert api.health.last_reply is not None and api.health.timeouts == 0
+
+
+@pytest.mark.parametrize("has_data, asleep, action", [
+    (True, False, PollAction.READ),
+    (False, False, PollAction.READ),
+    (True, True, PollAction.SKIP),
+    (False, True, PollAction.READ),  # HA starting at night
+])
+def test_poll_action_while_the_hub_answers(has_data, asleep, action):
+    assert HubHealth(FakeClock()).poll_action(has_data, asleep) is action
+
+
+@pytest.mark.parametrize("has_data", [True, False])
+def test_silent_hub_is_left_alone_then_tested_with_a_forced_read(has_data):
+    clock = FakeClock()
+    h = HubHealth(clock)
+    for _ in range(SILENT_AFTER):
+        h.timeout()
+    assert h.poll_action(has_data, asleep=False) is PollAction.SKIP
+    assert h.poll_action(has_data, asleep=True) is PollAction.SKIP
+    clock.now += PROBE_SECONDS
+    assert h.poll_action(has_data, asleep=False) is PollAction.TEST
+    assert h.poll_action(has_data, asleep=True) is (PollAction.SKIP if has_data else PollAction.TEST)

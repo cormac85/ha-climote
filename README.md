@@ -98,6 +98,11 @@ Entities (per zone: Living, Bed, Water)
 ├── climate.climote_living         ← HVAC card, set mode = boost on/off
 ├── switch.climote_living_boost    ← simple on/off toggle
 └── sensor.climote_living_*        ← temperature + boost time remaining
+
+Hub health
+├── sensor "Last Hub Reply"            ← when the hub itself last answered a read
+└── binary_sensor "Hub Not Answering"  ← on after 3 unanswered reads in a row; test reads
+                                          are then at least 6 h apart until one is answered
 ```
 
 ---
