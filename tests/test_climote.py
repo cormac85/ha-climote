@@ -66,7 +66,8 @@ from custom_components.climote.api import (
     ClimoteHubTimeout,
 )
 from custom_components.climote.const import BASE_URL
-from custom_components.climote.coordinator import ClimoteDataUpdateCoordinator
+from custom_components.climote import coordinator as coordinator_module
+from custom_components.climote.coordinator import CONFIRM_DELAY, ClimoteDataUpdateCoordinator
 
 def make_mock_response(status, text_val, headers=None):
     """Helper to construct a perfect async context manager mock response."""
@@ -693,3 +694,19 @@ async def test_login_does_not_log_the_csrf_token(caplog):
 
     assert api._csrf_token == "secret-token"
     assert "secret-token" not in caplog.text
+
+
+def test_commands_made_close_together_share_one_confirmation_read():
+    clock = FakeClock()
+    coordinator = ClimoteDataUpdateCoordinator(MagicMock(), MagicMock())
+    cancel = MagicMock()
+    with patch.object(coordinator_module, "async_call_later", return_value=cancel) as later, \
+            patch.object(coordinator_module.time, "monotonic", clock), \
+            patch.object(coordinator, "_asleep", return_value=False):
+        coordinator.schedule_confirmation()
+        clock.now += 60
+        coordinator.expect_setpoint(1, 19.0, by_person=True)
+
+    assert [c.args[1] for c in later.call_args_list] == [CONFIRM_DELAY, CONFIRM_DELAY]
+    cancel.assert_called_once()  # the first read is replaced, not added to
+    assert CONFIRM_DELAY >= SETPOINT_SETTLE_SECONDS  # or a mismatch would be ignored

@@ -12,13 +12,14 @@ from .const import DOMAIN, LOGGER, DEFAULT_POLL_INTERVAL, DEFAULT_SLEEP_TIME
 from .api import ClimoteAPI, ClimoteConnectionError, ClimoteAuthError, ClimoteHubTimeout
 from .boost_state import BoostExpectations
 from .hub_health import PROBE_SECONDS, PollAction
-from .setpoint_state import SetpointExpectations, SETPOINT_SETTLE_SECONDS
+from .setpoint_state import SetpointExpectations
 from .sleep_period import in_sleep_period, parse_time
 
-# A boost or cancel is an SMS to the hub, and the hub needs a while to act on it: a status read a
-# second later still returns the old state. So after a command the entities show the state that was
-# asked for, and one read confirms it this long afterwards.
-BOOST_CONFIRM_DELAY = 60
+# A command is an SMS to the hub, and the hub needs a while to act on it: a status read a second later
+# still returns the old state. So after a command the entities show the state that was asked for, and
+# one read confirms it this long after the last command. The wait is long so that commands made close
+# together share that read: too many SMS in a short time trips a rate limit.
+CONFIRM_DELAY = 300
 # How long a requested "boost off" is believed without the hub agreeing. A requested "boost on" is
 # believed for the boost's own duration.
 BOOST_OFF_GRACE = 600
@@ -104,7 +105,7 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         """
         self._setpoints.expect(zone_id, temperature)
         self.async_update_listeners()
-        self.schedule_confirmation(SETPOINT_SETTLE_SECONDS, override_sleep=by_person)
+        self.schedule_confirmation(override_sleep=by_person)
 
     def expected_setpoint(self, zone_id: int) -> float | None:
         """The temperature the last command asked for, until a read of the hub settles it."""
@@ -121,14 +122,14 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
             LOGGER.info("Zone %d: hub confirms the requested boost state", zone_id)
         for zone_id, zone in contradicted:
             # A regular poll soon after a command is expected to be stale; only the read made on
-            # purpose a minute later says anything about whether the hub reports this boost at all.
+            # purpose some minutes later says anything about whether the hub reports this boost at all.
             (LOGGER.warning if forced else LOGGER.debug)(
                 "Zone %d: a boost command was sent but the hub reports status=%r timeRemaining=%r; "
                 "keeping the requested state until the boost would have ended",
                 zone_id, zone.get("status"), zone.get("timeRemaining"),
             )
 
-    def schedule_confirmation(self, delay: float = BOOST_CONFIRM_DELAY, override_sleep: bool = False) -> None:
+    def schedule_confirmation(self, delay: float = CONFIRM_DELAY, override_sleep: bool = False) -> None:
         """One forced hub read (one SMS) at least `delay` seconds from now.
 
         A read already waiting is folded into this one, at whichever of the two times is later.
