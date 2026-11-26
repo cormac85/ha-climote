@@ -103,6 +103,9 @@ Hub health
 ├── sensor "Last Hub Reply"            ← when the hub itself last answered a read
 └── binary_sensor "Hub Not Answering"  ← on after 3 unanswered reads in a row; test reads
                                           are then at least 6 h apart until one is answered
+
+A scheduled poll the hub misses keeps the last data, so entities stay usable ("Last Hub Reply"
+shows its age). They go unavailable only once the hub counts as silent, or with no data to keep.
 ```
 
 ---

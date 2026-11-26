@@ -9,7 +9,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, LOGGER, DEFAULT_POLL_INTERVAL, DEFAULT_SLEEP_TIME
-from .api import ClimoteAPI, ClimoteConnectionError, ClimoteAuthError
+from .api import ClimoteAPI, ClimoteConnectionError, ClimoteAuthError, ClimoteHubTimeout
 from .boost_state import BoostExpectations
 from .hub_health import PROBE_SECONDS, PollAction
 from .setpoint_state import SetpointExpectations, SETPOINT_SETTLE_SECONDS
@@ -190,6 +190,16 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
                 self.last_update_success_time = dt_util.utcnow()
                 self._reconcile_expected(data)
                 return data
+        except ClimoteHubTimeout as err:
+            # One or two missed replies are normal. Failing here would make every entity unavailable,
+            # and so uncontrollable, until the next poll. Once the hub counts as silent, do fail.
+            if self.data and self.last_update_success and not self.api.health.silent:
+                LOGGER.warning(
+                    "%s; keeping the last data (see Last Hub Reply for its age)", err
+                )
+                return self.data
+            LOGGER.warning("Climote poll failed: %s", err)
+            raise UpdateFailed(str(err)) from err
         except ClimoteAuthError as err:
             LOGGER.error("Climote authentication expired during polling: %s", err)
             raise UpdateFailed(f"Auth expired: {err}") from err
