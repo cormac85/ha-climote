@@ -25,7 +25,30 @@ sys.modules['homeassistant.exceptions'].ConfigEntryNotReady = ConfigEntryNotRead
 sys.modules['homeassistant.helpers'] = MagicMock()
 sys.modules['homeassistant.util'] = MagicMock()
 sys.modules['homeassistant.helpers.event'] = MagicMock()
-sys.modules['homeassistant.helpers.update_coordinator'] = MagicMock()
+
+
+class DataUpdateCoordinator:
+    """Just enough of HA's base class to build the real coordinator on."""
+
+    def __class_getitem__(cls, _item):
+        return cls
+
+    def __init__(self, hass, *_args, **_kwargs):
+        self.hass = hass
+        self.data = None
+        self.last_update_success = True
+
+    def async_update_listeners(self):
+        pass
+
+
+class UpdateFailed(Exception):
+    pass
+
+
+sys.modules['homeassistant.helpers.update_coordinator'] = MagicMock(
+    DataUpdateCoordinator=DataUpdateCoordinator, UpdateFailed=UpdateFailed
+)
 sys.modules['homeassistant.helpers.entity_platform'] = MagicMock()
 sys.modules['homeassistant.helpers.aiohttp_client'] = MagicMock()
 sys.modules['homeassistant.helpers.config_validation'] = MagicMock()
@@ -43,6 +66,8 @@ from custom_components.climote.api import (
     ClimoteHubTimeout,
 )
 from custom_components.climote.const import BASE_URL
+from custom_components.climote import coordinator as coordinator_module
+from custom_components.climote.coordinator import CONFIRM_DELAY, ClimoteDataUpdateCoordinator
 
 def make_mock_response(status, text_val, headers=None):
     """Helper to construct a perfect async context manager mock response."""
@@ -598,3 +623,87 @@ def test_silent_hub_is_left_alone_then_tested_with_a_forced_read(has_data):
     clock.now += PROBE_SECONDS
     assert h.poll_action(has_data, asleep=False) is PollAction.TEST
     assert h.poll_action(has_data, asleep=True) is (PollAction.SKIP if has_data else PollAction.TEST)
+
+
+def silent_hub_coordinator(timeouts, data):
+    """A coordinator whose next poll goes unanswered, after `timeouts` earlier unanswered reads."""
+    api = ClimoteAPI(MagicMock(spec=aiohttp.ClientSession), "test@email.com", "password")
+    for _ in range(timeouts):
+        api.health.timeout()
+    coordinator = ClimoteDataUpdateCoordinator(MagicMock(), api)
+    coordinator.data = data
+
+    async def unanswered(force_gsm=False):
+        api.health.timeout()
+        raise ClimoteHubTimeout("Hub did not answer")
+
+    api.get_status = unanswered
+    return coordinator
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("earlier", [0, 1])
+async def test_a_missed_poll_keeps_the_last_data(earlier):
+    coordinator = silent_hub_coordinator(earlier, {"zone1": {}})
+    assert await coordinator._async_update_data() == {"zone1": {}}
+    assert coordinator.last_update_success_time is None  # kept data is not a new update
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "earlier, data, succeeded",
+    [(2, {"zone1": {}}, True), (0, None, True), (0, {"zone1": {}}, False)],
+    ids=["hub silent", "nothing to keep", "already failed"],
+)
+async def test_a_missed_poll_fails_without_recent_data(earlier, data, succeeded):
+    coordinator = silent_hub_coordinator(earlier, data)
+    coordinator.last_update_success = succeeded
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached", ['"awaiting response"', "<html>Log in</html>"])
+async def test_a_useless_cached_reply_is_logged_and_starts_no_second_read(cached, caplog):
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    api._csrf_token = "csrf123"
+    session.request.side_effect = [make_mock_response(200, '"awaiting response"')] + [
+        make_mock_response(200, "0")
+    ] * 30 + [make_mock_response(200, cached)]
+
+    with patch("asyncio.sleep", new=AsyncMock()), pytest.raises(ClimoteHubTimeout):
+        await api.get_status(force_gsm=True)
+
+    assert session.request.call_count == 32
+    assert cached.strip('"') in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_login_does_not_log_the_csrf_token(caplog):
+    session = MagicMock(spec=aiohttp.ClientSession)
+    api = ClimoteAPI(session, "test@email.com", "password")
+    session.request.side_effect = [
+        make_mock_response(200, "0"),
+        make_mock_response(302, "", {"Location": "/manager/index"}),
+        make_mock_response(200, '<input name="cs_token_rf" value="secret-token" />'),
+    ]
+
+    with caplog.at_level("DEBUG"):
+        await api.login()
+
+    assert api._csrf_token == "secret-token"
+    assert "secret-token" not in caplog.text
+
+
+def test_commands_made_close_together_share_one_confirmation_read():
+    coordinator = ClimoteDataUpdateCoordinator(MagicMock(), MagicMock())
+    cancel = MagicMock()
+    with patch.object(coordinator_module, "async_call_later", return_value=cancel) as later, \
+            patch.object(coordinator, "_asleep", return_value=False):
+        coordinator.schedule_confirmation()
+        coordinator.expect_setpoint(1, 19.0, by_person=True)
+
+    assert [c.args[1] for c in later.call_args_list] == [CONFIRM_DELAY, CONFIRM_DELAY]
+    cancel.assert_called_once()  # the first read is replaced, not added to
+    assert CONFIRM_DELAY >= SETPOINT_SETTLE_SECONDS  # or a mismatch would be ignored

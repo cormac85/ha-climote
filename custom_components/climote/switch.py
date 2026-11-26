@@ -81,7 +81,7 @@ class ClimoteZoneBoostSwitch(CoordinatorEntity[ClimoteDataUpdateCoordinator], Sw
         success = await self.coordinator.api.set_boost(self._zone_id, float(duration))
         if success:
             # An immediate status read returns the state from before the hub got the command, so
-            # show the boost now and let one read a minute later confirm it.
+            # show the boost now and let one later read confirm it.
             self.coordinator.expect_boost(self._zone_id, True, float(duration))
             self.coordinator.schedule_confirmation()
         else:

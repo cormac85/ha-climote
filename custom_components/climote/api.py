@@ -194,7 +194,7 @@ class ClimoteAPI:
             csrf_match = re.search(r'name="cs_token_rf"\s+value="([^"]+)"', index_html)
             if csrf_match:
                 self._csrf_token = csrf_match.group(1)
-                LOGGER.debug("Discovered Climote CSRF Token: %s", self._csrf_token)
+                LOGGER.debug("Discovered Climote CSRF token")
             else:
                 LOGGER.error("Failed to find Climote CSRF token in index page HTML")
                 raise ClimoteAuthError("CSRF extraction failed")
@@ -375,11 +375,20 @@ class ClimoteAPI:
         # Fallback: one cached read that never starts another poll. It used to call get_status, and
         # when the portal answered "awaiting response" again that began another 90 s poll, and so on
         # for as long as the hub stayed silent.
-        data = await self._fetch_status(force_gsm=False, poll_if_awaiting=False)
+        no_status = (
+            f"Hub did not answer within {int(max_attempts * poll_delay)} s and the portal has no cached status"
+        )
+        try:
+            data = await self._fetch_status(force_gsm=False, poll_if_awaiting=False)
+        except ClimoteConnectionError as err:
+            # Must not escape as it is: get_status would log in again and start another hub read.
+            LOGGER.warning("Reading the portal's cached status failed: %s", err)
+            raise ClimoteHubTimeout(no_status) from err
         if not isinstance(data, dict) or "zone1" not in data:
-            raise ClimoteHubTimeout(
-                f"Hub did not answer within {int(max_attempts * poll_delay)} s and the portal has no cached status"
-            )
+            # The first 80 characters show what the portal sends instead of a status.
+            snippet = " ".join(str(data).split())[:80]
+            LOGGER.warning("The portal's cached reply has no status, it starts %r", snippet)
+            raise ClimoteHubTimeout(no_status)
         self.last_read_stale = True
         return data
 

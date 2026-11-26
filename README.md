@@ -78,7 +78,9 @@ After setup, click **Configure** on the integration to adjust:
 | **Default Boost Duration** | 1 hour | Duration used when toggling boost via switch/climate |
 | **Sleep period start / end** | off (both 00:00) | No scheduled polls in this daily window, to save SMS. Boosts and automated temperature changes get no confirmation read either; a temperature changed by a person still does. One read when it ends. HA starting with no data still reads once |
 
-> ⚠️ **Do not set polling below 1800s (30 min).** Climote uses GSM/SMS to communicate with the hub. Excessive polling will exhaust your SMS credit.
+> ⚠️ **Poll as rarely as you can live with** (the minimum is 1800s, 30 min). A poll can cost an SMS: the portal often answers a plain poll with "awaiting response" and asks the hub. Climote appears to rate limit SMS over an hour or a few hours (the exact limit is unknown), and the hub then stops answering.
+
+After a boost or temperature command the integration reads the hub once, 5 minutes after the last command, so commands made close together share one read. Until then the entities show what was asked for.
 
 ---
 
@@ -103,6 +105,9 @@ Hub health
 ├── sensor "Last Hub Reply"            ← when the hub itself last answered a read
 └── binary_sensor "Hub Not Answering"  ← on after 3 unanswered reads in a row; test reads
                                           are then at least 6 h apart until one is answered
+
+A scheduled poll the hub misses keeps the last data, so entities stay usable ("Last Hub Reply"
+shows its age). They go unavailable only once the hub counts as silent, or with no data to keep.
 ```
 
 ---
