@@ -4,6 +4,7 @@ import re
 import aiohttp
 import xmltodict
 
+from .hub_health import HubHealth
 from .const import (
     BASE_URL,
     LOGGER,
@@ -62,6 +63,7 @@ class ClimoteAPI:
         self._schedule_id = None
         self.gsm_reads = 0  # hub round trips since HA started, for the log line in _fetch_status
         self.last_read_stale = False  # True when the hub was silent and the portal's cache was returned
+        self.health = HubHealth()  # is the hub answering reads?
         self.zone_labels = {1: "Zone 1", 2: "Zone 2", 3: "Zone 3"}
 
     @property
@@ -363,11 +365,13 @@ class ClimoteAPI:
                 data = json.loads(clean_res)
                 if isinstance(data, dict) and "zone1" in data:
                     LOGGER.debug("GSM update completed successfully on attempt %d", attempt)
+                    self.health.reply()
                     return data
             except Exception as err:
                 LOGGER.warning("Error during GSM poll attempt %d: %s", attempt, err)
 
         LOGGER.error("GSM polling timed out after %d attempts. Falling back to the cached status.", max_attempts)
+        self.health.timeout()
         # Fallback: one cached read that never starts another poll. It used to call get_status, and
         # when the portal answered "awaiting response" again that began another 90 s poll, and so on
         # for as long as the hub stayed silent.

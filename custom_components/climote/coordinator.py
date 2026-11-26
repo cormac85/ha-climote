@@ -11,6 +11,7 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN, LOGGER, DEFAULT_POLL_INTERVAL, DEFAULT_SLEEP_TIME
 from .api import ClimoteAPI, ClimoteConnectionError, ClimoteAuthError
 from .boost_state import BoostExpectations
+from .hub_health import PROBE_SECONDS, PollAction
 from .setpoint_state import SetpointExpectations, SETPOINT_SETTLE_SECONDS
 from .sleep_period import in_sleep_period, parse_time
 
@@ -54,6 +55,24 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         self._cancel_confirm = None
         self._confirm_due = 0.0
         self._cancel_expiry: dict[int, Callable[[], None]] = {}
+        self._hub_was_silent = False
+        api.health.on_change = self._hub_health_changed
+
+    @callback
+    def _hub_health_changed(self) -> None:
+        health = self.api.health
+        if health.silent != self._hub_was_silent:
+            self._hub_was_silent = health.silent
+            if health.silent:
+                LOGGER.warning(
+                    "The hub has not answered %d reads in a row (rate limited, off or no signal?); "
+                    "test reads are now at least %d hours apart",
+                    health.timeouts, PROBE_SECONDS // 3600,
+                )
+            else:
+                LOGGER.info("The hub is answering again; normal polling resumes")
+        # A failed read does not make HA refresh the entities, so do it here.
+        self.async_update_listeners()
 
     def expect_boost(self, zone_id: int, on: bool, duration_hours: float = 0.0) -> None:
         """Remember that a boost on/off command was just sent, and show that state meanwhile."""
@@ -126,6 +145,9 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
 
         async def _confirm(_now) -> None:
             self._cancel_confirm = None
+            if not self.api.health.may_read():
+                LOGGER.debug("Hub not answering: no confirmation read")
+                return
             try:
                 await self.async_force_gsm_refresh()
             except UpdateFailed as err:
@@ -147,18 +169,18 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
 
     async def _async_update_data(self) -> dict:
         """Fetch data from Climote Cloud (regular cached polling)."""
-        # Skip scheduled polls while asleep. With no data yet (HA has just started) read anyway.
-        if self.data and self._asleep():
-            LOGGER.debug("Climote sleep period: skipping this poll")
-            if not self.last_update_success:
-                raise UpdateFailed("Sleep period, and the last read failed")
+        action = self.api.health.poll_action(has_data=bool(self.data), asleep=self._asleep())
+        if action is PollAction.SKIP:
+            LOGGER.debug("Climote: skipping this poll (sleep period, or hub not answering)")
+            if not self.data or not self.last_update_success:
+                raise UpdateFailed("Poll skipped, and there is no successful read to show")
             return self.data
 
-        LOGGER.debug("Climote coordinator polling cached state...")
+        LOGGER.debug("Climote coordinator poll: %s", action.value)
         try:
             async with async_timeout.timeout(POLL_TIMEOUT):
-                # Standard poll uses force_gsm=False to avoid expensive SMS
-                data = await self.api.get_status(force_gsm=False)
+                # A standard poll does not force a hub read; a test of a silent hub does.
+                data = await self.api.get_status(force_gsm=action is PollAction.TEST)
                 
                 # Check if data is valid
                 if not data or not isinstance(data, dict):
