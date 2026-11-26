@@ -697,14 +697,11 @@ async def test_login_does_not_log_the_csrf_token(caplog):
 
 
 def test_commands_made_close_together_share_one_confirmation_read():
-    clock = FakeClock()
     coordinator = ClimoteDataUpdateCoordinator(MagicMock(), MagicMock())
     cancel = MagicMock()
     with patch.object(coordinator_module, "async_call_later", return_value=cancel) as later, \
-            patch.object(coordinator_module.time, "monotonic", clock), \
             patch.object(coordinator, "_asleep", return_value=False):
         coordinator.schedule_confirmation()
-        clock.now += 60
         coordinator.expect_setpoint(1, 19.0, by_person=True)
 
     assert [c.args[1] for c in later.call_args_list] == [CONFIRM_DELAY, CONFIRM_DELAY]

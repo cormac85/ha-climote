@@ -1,5 +1,4 @@
 from collections.abc import Callable
-import time
 from datetime import timedelta
 import async_timeout
 
@@ -54,7 +53,6 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
         self.sleep_start = parse_time(sleep_start)
         self.sleep_end = parse_time(sleep_end)
         self._cancel_confirm = None
-        self._confirm_due = 0.0
         self._cancel_expiry: dict[int, Callable[[], None]] = {}
         self._hub_was_silent = False
         api.health.on_change = self._hub_health_changed
@@ -129,20 +127,17 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
                 zone_id, zone.get("status"), zone.get("timeRemaining"),
             )
 
-    def schedule_confirmation(self, delay: float = CONFIRM_DELAY, override_sleep: bool = False) -> None:
-        """One forced hub read (one SMS) at least `delay` seconds from now.
+    def schedule_confirmation(self, override_sleep: bool = False) -> None:
+        """One forced hub read (one SMS) CONFIRM_DELAY seconds from now.
 
-        A read already waiting is folded into this one, at whichever of the two times is later.
+        A read already waiting is replaced by this one.
         Skipped in the sleep period unless `override_sleep`; a read already waiting is left alone.
         """
         if not override_sleep and self._asleep():
             LOGGER.debug("Climote sleep period: no confirmation read")
             return
-        now = time.monotonic()
         if self._cancel_confirm is not None:
             self._cancel_confirm()
-            delay = max(delay, self._confirm_due - now)
-        self._confirm_due = now + delay
 
         async def _confirm(_now) -> None:
             self._cancel_confirm = None
@@ -154,7 +149,7 @@ class ClimoteDataUpdateCoordinator(DataUpdateCoordinator[dict]):
             except UpdateFailed as err:
                 LOGGER.warning("Confirmation read after a boost command failed: %s", err)
 
-        self._cancel_confirm = async_call_later(self.hass, delay, _confirm)
+        self._cancel_confirm = async_call_later(self.hass, CONFIRM_DELAY, _confirm)
 
     def _asleep(self) -> bool:
         return in_sleep_period(dt_util.now().time(), self.sleep_start, self.sleep_end)
